@@ -1,29 +1,13 @@
 # SDR to HDR — ACEScg Converter
 
-Turn any 8-bit image into a production-ready ACEScg EXR. AI-reconstructed highlights, physically plausible values, ready to light a scene.
-
-Built for VFX artists who need real HDR projection textures from AI-generated images, photos, or any SDR source — without spending hours painting luminance by hand.
+Turn any 8-bit image into a production-ready ACEScg EXR. AI-reconstructed highlights, physically plausible dynamic range, ready to light a scene.
 
 ```bash
 pip install .
 sdr-hdr photo.png --mode model -o photo_acescg.exr
 ```
 
-That's it. Weights download automatically. Tile size adapts to your GPU. Output is half-float RGBA EXR with premultiplied alpha — drops straight into Nuke, RV, 3ds Max, Houdini, or any ACES-aware app.
-
-## What You Get
-
-A street light in your sRGB source reads 1.0. In the output EXR, it reads 150+. A sunlit wall reads 0.05. Shadows sit at 0.002. Push exposure 6 stops in comp and it still holds up — no banding, no solarization, no clipped blobs where highlights used to be.
-
-| Content | ACEScg Value |
-|---------|-------------|
-| Deep shadow | 0.001 - 0.005 |
-| Dark surface (stone, foliage) | 0.01 - 0.03 |
-| Lit surface (sunlit wall) | 0.03 - 0.11 |
-| Bright surface | 0.5 - 5.0 |
-| Light source | 100 - 150+ |
-
-Calibrated against ARRI ALEXA 35 ACEScg plates. Lit walls: 0.02-0.11. Practicals: 245-485.
+Weights download automatically. Tile size adapts to your GPU. Output is half-float RGBA EXR with premultiplied alpha — drops straight into Nuke, RV, 3ds Max, Houdini, or any ACES-aware app.
 
 ## Install
 
@@ -33,38 +17,65 @@ cd SDR_HDR
 pip install .
 ```
 
-Needs Python 3.10+ and PyTorch 2.0+. CUDA GPU with 8+ GB VRAM for model mode.
+Python 3.10+, PyTorch 2.0+. CUDA GPU with 8+ GB VRAM for model mode.
 
 ## Usage
 
 ```bash
-# AI highlight reconstruction (recommended)
+# AI highlight reconstruction (recommended — needs GPU)
 sdr-hdr photo.png --mode model -o photo_acescg.exr
-
-# Batch convert a folder
-sdr-hdr ./textures/ --mode model -o ./textures_hdr/
 
 # Fast math-only conversion (no GPU needed)
 sdr-hdr photo.png -o photo_acescg.exr
+
+# Batch convert a folder
+sdr-hdr ./textures/ -o ./textures_hdr/
 ```
+
+## Scene Presets
+
+Linear mode ships with presets tuned for common scene types. Pick the one that matches your source and go.
+
+```bash
+sdr-hdr photo.png --preset day -o photo_acescg.exr
+sdr-hdr photo.png --preset night -o photo_acescg.exr
+sdr-hdr photo.png --preset hdri -o photo_acescg.exr
+```
+
+| Preset | Peak | Gain | What it's for |
+|--------|------|------|---------------|
+| `night` | 150 | 3.0 | Night exteriors — point lights very hot, deep shadows |
+| `day` | 30 | 4.0 | Daylight — lower contrast, ambient-filled shadows |
+| `interior` | 60 | 3.5 | Indoor scenes — windows and practicals moderately hot |
+| `overcast` | 15 | 5.0 | Flat lighting — gentle expansion, lifted shadows |
+| `hdri` | 250 | 3.0 | Environment maps for CG lighting — very hot light sources |
+
+`--peak` and `--gain` override preset values if you need to fine-tune:
+
+```bash
+# Start with night preset but cap highlights lower
+sdr-hdr photo.png --preset night --peak 100
+```
+
+Without a preset, defaults are peak=150 and gain=3.0.
 
 ## Two Modes
 
 ### Model Mode (`--mode model`)
 
-The real deal. A [Refusion-HDR](https://github.com/LiamLian0727/Refusion-HDR) diffusion model (ConditionalNAFNet + IRSDE) runs 100 reverse diffusion steps to reconstruct what was actually behind those clipped highlights. PU21 decodes the result to absolute luminance, then it's converted to ACEScg.
+A [Refusion-HDR](https://github.com/LiamLian0727/Refusion-HDR) diffusion model (ConditionalNAFNet + IRSDE) runs 100 reverse diffusion steps to reconstruct what was behind clipped highlights. PU21 decodes to absolute luminance, then converts to ACEScg.
 
-Weights (~292 MB) download automatically on first run. Tile size auto-adapts to your VRAM — works on 8 GB cards, flies on a 5090.
+Weights (~292 MB) auto-download on first run. Tile size auto-adapts to your VRAM.
 
 ### Linear Mode (default)
 
-Pure math, no AI. Fast, predictable, runs on CPU.
+Pure math, no AI. Fast, runs on CPU.
 
 ```
 sRGB → EOTF decode → TPDF dither → luminance-based inverse tonemap → Rec.709 → ACEScg
 ```
 
-Expands dynamic range using `hdr = Y * (gain + (peak - gain) * Y²)` on luminance only, then scales RGB proportionally. Preserves chromaticity, prevents solarization. Good when you need speed or don't have a GPU.
+Applies `hdr = Y * (gain + (peak - gain) * Y²)` to luminance only, scales RGB proportionally. Preserves chromaticity, prevents solarization. TPDF dithering kills 8-bit banding before the nonlinear expansion.
 
 ## Parameters
 
@@ -75,28 +86,14 @@ sdr-hdr input -o output [options]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--mode` | `linear` | `linear` or `model` |
+| `--preset` | — | Scene preset: `night`, `day`, `interior`, `overcast`, `hdri` |
 | `--exposure` | `0.0` | Exposure adjustment in stops |
-| `--peak` | `150` | Max HDR value (linear mode) |
-| `--gain` | `3.0` | Mid-tone multiplier (linear mode) |
+| `--peak` | `150` | Max HDR value — or set by preset (linear mode) |
+| `--gain` | `3.0` | Mid-tone multiplier — or set by preset (linear mode) |
 | `--tile-size` | auto | Tile dimension, auto from VRAM (model mode) |
 | `--overlap` | `64` | Tile overlap for blending (model mode) |
 | `--normalize` | `diffuse` | `diffuse`, `pq-peak`, or `middle-gray` (model mode) |
 | `--weights` | auto | Path to model checkpoint (model mode) |
-
-### Tuning (Linear Mode)
-
-```bash
-# Brighter mid-tones, moderate highlights
-sdr-hdr input.png --gain 4.0 --peak 120
-
-# Subtle expansion
-sdr-hdr input.png --gain 2.0 --peak 80
-
-# Aggressive HDR for environment lighting
-sdr-hdr input.png --gain 3.0 --peak 200
-```
-
-**Too dark?** Raise `--gain`. **Highlights too hot?** Lower `--peak`. **Overall shift?** Use `--exposure` in stops.
 
 ## How It Works
 
@@ -105,14 +102,14 @@ All color math is pure PyTorch on GPU — no OCIO, no oiiotool.
 - **Input**: sRGB (Rec.709 primaries, sRGB EOTF)
 - **Output**: ACEScg (AP1 primaries, D60 white point, scene-linear)
 - **Color transform**: 3x3 matrix with Bradford chromatic adaptation D65 → D60
-- **Dithering**: TPDF at ±1 LSB before nonlinear expansion — kills 8-bit banding
+- **Dithering**: TPDF at ±1 LSB before nonlinear expansion
 - **Alpha**: Premultiplied, preserved from source
 
 ## Project Structure
 
 ```
 SDR_HDR/
-├── convert.py              # CLI entry point
+├── convert.py              # CLI entry point + presets
 ├── pyproject.toml          # pip install .
 ├── pipeline/
 │   ├── inference.py        # Conversion pipeline (linear + model)
@@ -123,7 +120,7 @@ SDR_HDR/
 │   ├── nafnet.py           # ConditionalNAFNet (Refusion-HDR)
 │   ├── sde.py              # IRSDE diffusion engine
 │   └── pu21.py             # PU21 perceptual encoder/decoder
-├── tests/                  # 41 tests
+├── tests/                  # 45 tests
 └── weights/                # Auto-downloaded, gitignored
 ```
 
@@ -135,4 +132,3 @@ SDR_HDR/
 
 - [Refusion-HDR](https://github.com/LiamLian0727/Refusion-HDR) — ConditionalNAFNet + IRSDE architecture (AIM 2025 ITM Challenge)
 - [PU21](https://doi.org/10.1109/TIP.2021.3070413) — Perceptually Uniform encoding (Mantiuk & Azimi 2021)
-- Plate calibration from ARRI ALEXA 35 ACEScg production footage

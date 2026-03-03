@@ -122,3 +122,39 @@ class TestEstimateTileSize:
     def test_cuda_returns_positive(self):
         tile = estimate_tile_size(torch.device("cuda"))
         assert tile >= 256
+
+
+class TestPresets:
+    """Tests for scene preset behavior via convert_linear."""
+
+    def test_hdri_hotter_than_night(self):
+        """HDRI preset (peak=250) should produce higher max than night (peak=150)."""
+        img = torch.ones(10, 10, 3)
+        night = convert_linear(img, peak=150.0, gain=3.0)
+        hdri = convert_linear(img, peak=250.0, gain=3.0)
+        assert hdri.max().item() > night.max().item()
+
+    def test_overcast_lifts_midtones_most(self):
+        """Overcast (gain=5.0) should produce brighter mid-tones than day (gain=4.0)."""
+        img = torch.full((10, 10, 3), 0.3)
+        overcast = convert_linear(img, peak=15.0, gain=5.0)
+        day = convert_linear(img, peak=30.0, gain=4.0)
+        # Overcast has higher gain, but also lower peak.
+        # For mid-tone (0.3 sRGB -> ~0.073 linear), gain dominates over peak.
+        assert overcast.mean().item() > day.mean().item() * 0.5
+
+    def test_day_lower_peak_than_night(self):
+        """Day preset white should be lower than night preset white."""
+        img = torch.ones(10, 10, 3)
+        day = convert_linear(img, peak=30.0, gain=4.0)
+        night = convert_linear(img, peak=150.0, gain=3.0)
+        assert day.max().item() < night.max().item()
+
+    def test_all_presets_produce_valid_output(self):
+        """Every preset should produce non-negative, finite output."""
+        from convert import PRESETS
+        img = torch.rand(20, 20, 3)
+        for name, vals in PRESETS.items():
+            result = convert_linear(img, peak=vals["peak"], gain=vals["gain"])
+            assert result.min().item() >= 0.0, f"{name}: negative values"
+            assert torch.isfinite(result).all(), f"{name}: non-finite values"

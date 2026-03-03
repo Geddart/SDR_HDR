@@ -26,6 +26,14 @@ from pipeline.inference import load_model, convert_file, estimate_tile_size
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 WEIGHTS_FILENAME = "lastest_EMA.pth"
 
+PRESETS = {
+    "night":    {"peak": 150.0, "gain": 3.0},
+    "day":      {"peak": 30.0,  "gain": 4.0},
+    "interior": {"peak": 60.0,  "gain": 3.5},
+    "overcast": {"peak": 15.0,  "gain": 5.0},
+    "hdri":     {"peak": 250.0, "gain": 3.0},
+}
+
 
 def _resolve_weights_path() -> Path:
     """Find weights: project-relative first, then user cache dir."""
@@ -74,11 +82,28 @@ def main():
                         help="Max tile dimension in pixels (model mode only, default: auto based on VRAM)")
     parser.add_argument("--overlap", type=int, default=64,
                         help="Tile overlap in pixels (model mode only, default: 64)")
-    parser.add_argument("--peak", type=float, default=150.0,
-                        help="Peak HDR value for sRGB white (linear mode, default: 150)")
-    parser.add_argument("--gain", type=float, default=3.0,
-                        help="Mid-tone brightness multiplier (linear mode, default: 3.0)")
+    parser.add_argument("--preset", type=str, default=None,
+                        choices=list(PRESETS.keys()),
+                        help="Scene preset: night, day, interior, overcast, hdri (sets peak and gain)")
+    parser.add_argument("--peak", type=float, default=None,
+                        help="Peak HDR value for sRGB white (linear mode, default: 150 or from preset)")
+    parser.add_argument("--gain", type=float, default=None,
+                        help="Mid-tone brightness multiplier (linear mode, default: 3.0 or from preset)")
     args = parser.parse_args()
+
+    # Resolve peak/gain: preset -> explicit override -> fallback defaults
+    peak = args.peak
+    gain = args.gain
+    if args.preset:
+        preset_vals = PRESETS[args.preset]
+        if peak is None:
+            peak = preset_vals["peak"]
+        if gain is None:
+            gain = preset_vals["gain"]
+    if peak is None:
+        peak = 150.0
+    if gain is None:
+        gain = 3.0
 
     # Resolve input
     input_path = Path(args.input)
@@ -112,7 +137,12 @@ def main():
     print(f"Mode: {args.mode}")
     print(f"Exposure: {args.exposure:+.1f} EV")
     if args.mode == "linear":
-        print(f"Peak: {args.peak:.0f}, Gain: {args.gain:.1f}")
+        if args.preset:
+            print(f"Preset: {args.preset} (peak={peak:.0f}, gain={gain:.1f})")
+        else:
+            print(f"Peak: {peak:.0f}, Gain: {gain:.1f}")
+    elif args.preset:
+        print(f"Note: --preset is ignored in model mode")
 
     # Load model (only if needed)
     model = None
@@ -157,8 +187,8 @@ def main():
             overlap=args.overlap,
             normalize_mode=args.normalize,
             exposure=args.exposure,
-            peak=args.peak,
-            gain=args.gain,
+            peak=peak,
+            gain=gain,
         )
 
     print(f"\nDone. Processed {len(files)} image(s).")
