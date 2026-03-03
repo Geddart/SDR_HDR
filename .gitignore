@@ -1,4 +1,5 @@
 weights/
+*.pth.tmp
 __pycache__/
 *.pyc
 .venv/

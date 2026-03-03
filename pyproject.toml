@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sdr-hdr"
+version = "1.1.0"
+description = "Convert sRGB images to ACEScg half-float EXR with HDR highlight expansion"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "opencv-python",
+    "numpy",
+    "OpenEXR",
+    "einops",
+    "tqdm",
+]
+
+[project.scripts]
+sdr-hdr = "convert:main"
+
+[tool.setuptools]
+py-modules = ["convert"]
+packages = ["models", "pipeline"]
