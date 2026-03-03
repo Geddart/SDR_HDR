@@ -1,13 +1,17 @@
 """
 SDR-to-HDR ACEScg Converter
 
-Converts sRGB images to ACEScg half-float EXR using Refusion-HDR
-(ConditionalNAFNet + IRSDE diffusion).
+Converts sRGB images to ACEScg half-float EXR with HDR highlight expansion.
+
+Modes:
+  linear  — sRGB EOTF -> inverse tone map -> Rec.709 -> ACEScg (fast, predictable)
+  model   — AI-based highlight reconstruction via Refusion-HDR diffusion
 
 Usage:
     python convert.py input.png -o output.exr
     python convert.py ./inputs/ -o ./outputs/
-    python convert.py input.png --normalize middle-gray --tile-size 1024
+    python convert.py input.png --peak 500
+    python convert.py input.png --mode model --exposure -4
 """
 import argparse
 import sys
@@ -15,7 +19,7 @@ from pathlib import Path
 
 import torch
 
-from pipeline.inference import load_model, convert_file, load_image
+from pipeline.inference import load_model, convert_file
 
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
@@ -29,15 +33,24 @@ def main():
     parser.add_argument("input", type=str, help="Input image or folder of images")
     parser.add_argument("-o", "--output", type=str, default=None,
                         help="Output EXR path or folder. Default: <input>_acescg.exr")
+    parser.add_argument("--mode", type=str, default="linear",
+                        choices=["linear", "model"],
+                        help="Conversion mode (default: linear)")
+    parser.add_argument("--exposure", type=float, default=0.0,
+                        help="Exposure adjustment in stops (default: 0.0)")
     parser.add_argument("--weights", type=str, default=str(DEFAULT_WEIGHTS),
-                        help="Path to lastest_EMA.pth checkpoint")
+                        help="Path to lastest_EMA.pth checkpoint (model mode only)")
     parser.add_argument("--normalize", type=str, default="diffuse",
                         choices=["diffuse", "pq-peak", "middle-gray"],
-                        help="Luminance normalization mode (default: diffuse)")
-    parser.add_argument("--tile-size", type=int, default=2048,
-                        help="Max tile dimension in pixels (default: 2048)")
+                        help="Luminance normalization (model mode only, default: diffuse)")
+    parser.add_argument("--tile-size", type=int, default=1024,
+                        help="Max tile dimension in pixels (model mode only, default: 1024)")
     parser.add_argument("--overlap", type=int, default=64,
-                        help="Tile overlap in pixels (default: 64)")
+                        help="Tile overlap in pixels (model mode only, default: 64)")
+    parser.add_argument("--peak", type=float, default=150.0,
+                        help="Peak HDR value for sRGB white (linear mode, default: 150)")
+    parser.add_argument("--gain", type=float, default=3.0,
+                        help="Mid-tone brightness multiplier (linear mode, default: 3.0)")
     args = parser.parse_args()
 
     # Resolve input
@@ -69,18 +82,23 @@ def main():
     # Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
+    print(f"Mode: {args.mode}")
+    print(f"Exposure: {args.exposure:+.1f} EV")
+    if args.mode == "linear":
+        print(f"Peak: {args.peak:.0f}, Gain: {args.gain:.1f}")
 
-    # Load model
-    weights = Path(args.weights)
-    if not weights.exists():
-        print(f"Error: Weights not found at {weights}")
-        print(f"Download from: https://www.dropbox.com/scl/fi/yg44t2i9tgrlsn3c1punc/lastest_EMA.pth?rlkey=fhjb37o34i9yt12337pyed5gi&st=43psqej3&dl=0")
-        print(f"Place in: {DEFAULT_WEIGHTS}")
-        sys.exit(1)
-
-    print(f"Loading model from {weights}...")
-    model = load_model(str(weights), device)
-    print(f"Model loaded. Normalization: {args.normalize}")
+    # Load model (only if needed)
+    model = None
+    if args.mode == "model":
+        weights = Path(args.weights)
+        if not weights.exists():
+            print(f"Error: Weights not found at {weights}")
+            print(f"Download from: https://www.dropbox.com/scl/fi/yg44t2i9tgrlsn3c1punc/lastest_EMA.pth")
+            print(f"Place in: {DEFAULT_WEIGHTS}")
+            sys.exit(1)
+        print(f"Loading model from {weights}...")
+        model = load_model(str(weights), device)
+        print(f"Model loaded. Normalization: {args.normalize}")
 
     # Process
     for i, file in enumerate(files):
@@ -96,11 +114,15 @@ def main():
         convert_file(
             input_path=str(file),
             output_path=str(out),
-            model=model,
             device=device,
+            mode=args.mode,
+            model=model,
             tile_size=args.tile_size,
             overlap=args.overlap,
             normalize_mode=args.normalize,
+            exposure=args.exposure,
+            peak=args.peak,
+            gain=args.gain,
         )
 
     print(f"\nDone. Processed {len(files)} image(s).")
