@@ -22,7 +22,7 @@ def test_write_read_roundtrip():
         # Read back with OpenEXR
         with OpenEXR.File(path) as f:
             channels = f.channels()
-            assert "R" in channels or "RGB" in channels
+            assert "R" in channels or "RGB" in channels or "RGBA" in channels
     finally:
         os.unlink(path)
 

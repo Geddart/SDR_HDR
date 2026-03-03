@@ -31,7 +31,7 @@ class IRSDE:
         dt = -1 / thetas_cumsum[-1] * math.log(eps)
         sigma_bars = torch.sqrt(max_sigma ** 2 * (1 - torch.exp(-2 * thetas_cumsum * dt)))
 
-        self.dt = dt
+        self.dt = dt.item()
         self.thetas = thetas.to(self.device)
         self.sigmas = sigmas.to(self.device)
         self.thetas_cumsum = thetas_cumsum.to(self.device)

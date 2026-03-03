@@ -1,13 +1,47 @@
 import torch
 
-# Combined BT.2020 (D65) -> ACEScg (AP1, D60) matrix.
+# Rec.709 / sRGB (D65) -> ACEScg (AP1, D60) matrix.
 # Includes chromatic adaptation via Bradford transform.
-# Source: colour-science library, validated against OCIO ACES configs.
-BT2020_TO_ACESCG = torch.tensor([
-    [0.61319930, 0.33951244, 0.04728826],
-    [0.07021272, 0.91635982, 0.01342745],
-    [0.02061835, 0.10957647, 0.86980518],
+# Computed from CIE xy primaries + Bradford CAT D65->D60.
+REC709_TO_ACESCG = torch.tensor([
+    [0.6130974024, 0.3395231462, 0.0473794514],
+    [0.0701937225, 0.9163538791, 0.0134523985],
+    [0.0206155929, 0.1095697729, 0.8698146342],
 ], dtype=torch.float64)
+
+# BT.2020 (D65) -> ACEScg (AP1, D60) matrix.
+# Near-identity since BT.2020 and ACEScg (AP1) have similar primaries.
+BT2020_TO_ACESCG = torch.tensor([
+    [0.9748949779, 0.0195991086, 0.0055059134],
+    [0.0021795628, 0.9955354689, 0.0022849683],
+    [0.0047972397, 0.0245320166, 0.9706707437],
+], dtype=torch.float64)
+
+
+def srgb_to_linear(rgb: torch.Tensor) -> torch.Tensor:
+    """
+    Decode sRGB EOTF to linear Rec.709.
+
+    Uses the piecewise sRGB transfer function (IEC 61966-2-1).
+    Input and output in [0, 1] range.
+    """
+    low = rgb / 12.92
+    high = ((rgb + 0.055) / 1.055).clamp(min=0.0).pow(2.4)
+    return torch.where(rgb <= 0.04045, low, high)
+
+
+def rec709_to_acescg(rgb: torch.Tensor) -> torch.Tensor:
+    """
+    Convert linear Rec.709 / sRGB RGB to ACEScg (AP1) RGB.
+
+    Args:
+        rgb: Tensor of shape (..., 3). Any device, any dtype.
+
+    Returns:
+        Tensor of same shape in ACEScg primaries.
+    """
+    M = REC709_TO_ACESCG.to(dtype=rgb.dtype, device=rgb.device)
+    return torch.einsum("...c,dc->...d", rgb, M)
 
 
 def bt2020_to_acescg(rgb: torch.Tensor) -> torch.Tensor:
@@ -22,6 +56,30 @@ def bt2020_to_acescg(rgb: torch.Tensor) -> torch.Tensor:
     """
     M = BT2020_TO_ACESCG.to(dtype=rgb.dtype, device=rgb.device)
     return torch.einsum("...c,dc->...d", rgb, M)
+
+
+def inverse_tonemap(
+    linear: torch.Tensor,
+    peak: float = 150.0,
+    gain: float = 3.0,
+) -> torch.Tensor:
+    """
+    SDR-to-HDR expansion with mid-tone lift and highlight rolloff.
+
+    Maps linear [0, 1] to HDR [0, peak]:
+        hdr = linear * (gain + (peak - gain) * linear^2)
+
+    - Low values behave as linear * gain (lifts mid-tones)
+    - At linear=1.0, output equals peak exactly
+    - Smooth polynomial transition between the two regimes
+
+    Args:
+        linear: Scene-linear values in [0, 1]. Any shape.
+        peak: Maximum output value. sRGB white (1.0) maps to this.
+        gain: Mid-tone multiplier. Controls brightness of non-highlight pixels.
+    """
+    L = linear.clamp(0.0, 1.0)
+    return L * (gain + (peak - gain) * L * L)
 
 
 def normalize_luminance(img: torch.Tensor, mode: str = "diffuse") -> torch.Tensor:

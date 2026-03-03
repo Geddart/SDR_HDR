@@ -10,7 +10,9 @@ from tqdm import tqdm
 from models.nafnet import ConditionalNAFNet
 from models.sde import IRSDE
 from models.pu21 import PU21Encoder
-from pipeline.colorspace import bt2020_to_acescg, normalize_luminance
+from pipeline.colorspace import (
+    srgb_to_linear, rec709_to_acescg, inverse_tonemap, normalize_luminance,
+)
 from pipeline.exr_writer import write_exr
 
 
@@ -23,7 +25,6 @@ def load_model(weights_path: str, device: torch.device) -> ConditionalNAFNet:
         dec_blk_nums=[1, 1, 1, 1],
     )
     state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
-    # Strip DataParallel "module." prefix if present
     clean = {}
     for k, v in state_dict.items():
         clean[k.removeprefix("module.")] = v
@@ -32,16 +33,90 @@ def load_model(weights_path: str, device: torch.device) -> ConditionalNAFNet:
     return model
 
 
-def load_image(path: str) -> torch.Tensor:
-    """Read an sRGB image and return float32 tensor (H, W, 3) in [0, 1], RGB order."""
+def load_image(path: str):
+    """
+    Read an image and return (rgb, alpha) as float32 tensors.
+
+    rgb: (H, W, 3) in [0, 1], RGB order (still sRGB gamma-encoded).
+    alpha: (H, W) in [0, 1], or None if no alpha channel.
+    """
     img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
     if img is None:
         raise FileNotFoundError(f"Cannot read image: {path}")
-    # BGR -> RGB
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img = img.astype(np.float32) / 255.0
-    return torch.from_numpy(img)
 
+    if img.ndim == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+        alpha = None
+    elif img.shape[2] == 4:
+        alpha = img[:, :, 3].astype(np.float32) / 255.0
+        img = cv2.cvtColor(img[:, :, :3], cv2.COLOR_BGR2RGB)
+    else:
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        alpha = None
+
+    rgb = img.astype(np.float32) / 255.0
+    rgb_tensor = torch.from_numpy(rgb)
+    alpha_tensor = torch.from_numpy(alpha) if alpha is not None else None
+    return rgb_tensor, alpha_tensor
+
+
+# ---------------------------------------------------------------------------
+# Linear mode: sRGB -> linear Rec.709 -> ACEScg (no AI model)
+# ---------------------------------------------------------------------------
+
+def convert_linear(
+    image: torch.Tensor,
+    exposure: float = 0.0,
+    peak: float = 150.0,
+    gain: float = 3.0,
+) -> torch.Tensor:
+    """
+    Convert sRGB image to ACEScg scene-linear with HDR highlight expansion.
+
+    Pipeline: sRGB EOTF -> dither -> luminance-based inverse tone map -> Rec.709 -> ACEScg.
+
+    The HDR curve is applied to luminance only, then RGB is scaled
+    proportionally. This preserves chromaticity and avoids per-channel
+    artifacts (solarization) that would appear when boosting exposure.
+
+    Args:
+        image: sRGB gamma-encoded (H, W, 3) in [0, 1].
+        exposure: Exposure adjustment in stops (EV). 0 = no change.
+        peak: Peak HDR value. sRGB white (1.0) maps to this in scene-linear.
+        gain: Mid-tone multiplier for non-highlight brightness.
+
+    Returns:
+        ACEScg scene-linear (H, W, 3) float32.
+    """
+    linear = srgb_to_linear(image)
+
+    # Triangular dither to break up 8-bit banding before nonlinear expansion.
+    # TPDF noise at +/- 1 LSB of 8-bit source (1/255).
+    noise = (torch.rand_like(linear) + torch.rand_like(linear) - 1.0) / 255.0
+    linear = (linear + noise).clamp(0.0)
+
+    # Rec.709 luminance
+    Y = (0.2126 * linear[..., 0:1]
+         + 0.7152 * linear[..., 1:2]
+         + 0.0722 * linear[..., 2:3]).clamp(min=1e-10)
+
+    # Apply HDR curve to luminance only, then scale RGB proportionally.
+    # This preserves the original chromaticity and avoids solarization.
+    Y_hdr = inverse_tonemap(Y, peak=peak, gain=gain)
+    hdr = linear * (Y_hdr / Y)
+
+    acescg = rec709_to_acescg(hdr)
+
+    if exposure != 0.0:
+        ev_gain = 2.0 ** exposure
+        acescg = acescg * ev_gain
+
+    return acescg
+
+
+# ---------------------------------------------------------------------------
+# Model mode: sRGB -> Refusion-HDR diffusion -> PU21 decode -> ACEScg
+# ---------------------------------------------------------------------------
 
 def _make_tiles(H: int, W: int, tile_size: int, overlap: int):
     """Generate (y_start, x_start, y_end, x_end) for each tile."""
@@ -54,7 +129,6 @@ def _make_tiles(H: int, W: int, tile_size: int, overlap: int):
             y_start = max(y_end - tile_size, 0)
             x_start = max(x_end - tile_size, 0)
             tiles.append((y_start, x_start, y_end, x_end))
-    # Deduplicate
     return list(dict.fromkeys(tiles))
 
 
@@ -81,14 +155,13 @@ def run_inference(
     model: ConditionalNAFNet,
     image: torch.Tensor,
     device: torch.device,
-    tile_size: int = 2048,
+    tile_size: int = 1024,
     overlap: int = 64,
     normalize_mode: str = "diffuse",
+    exposure: float = 0.0,
 ) -> torch.Tensor:
     """
-    Full pipeline: sRGB image (H, W, 3) -> ACEScg HDR (H, W, 3).
-
-    Returns float32 tensor on CPU.
+    Full AI pipeline: sRGB image (H, W, 3) -> ACEScg HDR (H, W, 3).
     """
     H, W, C = image.shape
     assert C == 3
@@ -103,63 +176,91 @@ def run_inference(
         output = _infer_single(model, sde, image, device)
     else:
         tiles = _make_tiles(H, W, tile_size, overlap)
-        output_acc = torch.zeros(H, W, C, device=device)
-        weight_acc = torch.zeros(H, W, 1, device=device)
+        output_acc = torch.zeros(H, W, C)
+        weight_acc = torch.zeros(H, W, 1)
 
         for i, (y0, x0, y1, x1) in enumerate(tqdm(tiles, desc="Tiles")):
             tile_img = image[y0:y1, x0:x1, :]
             tile_out = _infer_single(model, sde, tile_img, device)
+            tile_out = tile_out.cpu()
 
             th, tw = y1 - y0, x1 - x0
-            blend_w = _cosine_blend_weights(th, tw, overlap, device)
+            blend_w = _cosine_blend_weights(th, tw, overlap, "cpu")
 
             output_acc[y0:y1, x0:x1, :] += tile_out * blend_w.unsqueeze(-1)
             weight_acc[y0:y1, x0:x1, :] += blend_w.unsqueeze(-1)
 
+            del tile_out
+            torch.cuda.empty_cache()
+
         output = output_acc / weight_acc.clamp(min=1e-8)
 
+    if output.device.type != "cpu":
+        output = output.cpu()
+
     # PU21 decode: model output [0,1] -> scale to PU21 range -> decode to nits
-    pu21_scale = pu21.encode(torch.tensor(1000.0, device=device))
+    pu21_scale = pu21.encode(torch.tensor(1000.0))
     output_nits = pu21.decode(output * pu21_scale)
 
     # Normalize luminance
     output_normalized = normalize_luminance(output_nits, mode=normalize_mode)
 
-    # BT.2020 -> ACEScg
-    output_acescg = bt2020_to_acescg(output_normalized)
+    # Rec.709 -> ACEScg (model outputs in Rec.709/sRGB primaries)
+    output_acescg = rec709_to_acescg(output_normalized)
 
-    return output_acescg.cpu()
+    # Apply exposure
+    if exposure != 0.0:
+        gain = 2.0 ** exposure
+        output_acescg = output_acescg * gain
+
+    return output_acescg
 
 
 def _infer_single(model, sde, image_hwc, device):
     """Run SDE inference on a single image/tile. Returns (H, W, 3) on device."""
-    # HWC -> BCHW
     ldr = image_hwc.to(device).permute(2, 0, 1).unsqueeze(0)
-
     sde.set_mu(ldr)
     noisy = sde.noise_state(ldr)
-
-    # Reverse diffusion (100 steps)
     output = sde.reverse_posterior(noisy)
-
-    # BCHW -> HWC, clamp to valid PU21 input range
     return output.squeeze(0).permute(1, 2, 0).clamp(0, 1)
 
+
+# ---------------------------------------------------------------------------
+# File conversion entry point
+# ---------------------------------------------------------------------------
 
 def convert_file(
     input_path: str,
     output_path: str,
-    model: ConditionalNAFNet,
     device: torch.device,
-    tile_size: int = 2048,
+    mode: str = "linear",
+    model: ConditionalNAFNet = None,
+    tile_size: int = 1024,
     overlap: int = 64,
     normalize_mode: str = "diffuse",
+    exposure: float = 0.0,
+    peak: float = 150.0,
+    gain: float = 3.0,
 ):
-    """Convert a single image file to ACEScg EXR."""
-    image = load_image(input_path)
-    print(f"  Input: {input_path} ({image.shape[1]}x{image.shape[0]})")
+    """Convert a single image file to ACEScg EXR. Preserves alpha if present."""
+    image, alpha = load_image(input_path)
+    print(f"  Input: {input_path} ({image.shape[1]}x{image.shape[0]}"
+          f", alpha={'yes' if alpha is not None else 'no'})")
 
-    result = run_inference(model, image, device, tile_size, overlap, normalize_mode)
+    if mode == "linear":
+        result = convert_linear(image, exposure=exposure, peak=peak, gain=gain)
+    elif mode == "model":
+        if model is None:
+            raise ValueError("Model mode requires a loaded model")
+        result = run_inference(
+            model, image, device, tile_size, overlap, normalize_mode, exposure,
+        )
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
 
-    write_exr(result, output_path)
+    # Premultiply RGB by alpha for VFX-standard EXR output
+    if alpha is not None:
+        result = result * alpha.unsqueeze(-1)
+
+    write_exr(result, output_path, alpha=alpha)
     print(f"  Output: {output_path}")
