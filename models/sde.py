@@ -105,6 +105,6 @@ class IRSDE:
         C = torch.exp(-2 * self.thetas_cumsum[t - 1] * self.dt)
 
         posterior_var = (1 - A) * (1 - C) / (1 - B)
-        min_value = torch.tensor(1e-20 * self.dt, device=self.thetas.device)
+        min_value = 1e-20 * self.dt
         log_posterior_var = torch.log(torch.clamp(posterior_var, min=min_value))
         return (0.5 * log_posterior_var).exp() * self.max_sigma
