@@ -1,6 +1,8 @@
 """
 Tiled inference pipeline: sRGB input -> ACEScg HDR output.
 """
+import math
+
 import cv2
 import numpy as np
 import torch
@@ -14,6 +16,33 @@ from pipeline.colorspace import (
     srgb_to_linear, rec709_to_acescg, inverse_tonemap, normalize_luminance,
 )
 from pipeline.exr_writer import write_exr
+
+
+def estimate_tile_size(device: torch.device) -> int:
+    """
+    Estimate max tile size based on available VRAM.
+
+    Uses ~1500 bytes per pixel as the memory budget (model activations + SDE state).
+    Returns tile dimension rounded down to nearest 64, clamped to [256, 2048].
+    Returns 2048 for CPU (no VRAM constraint).
+    """
+    if device.type != "cuda":
+        return 2048
+
+    props = torch.cuda.get_device_properties(device)
+    total = props.total_memory
+    allocated = torch.cuda.memory_allocated(device)
+    headroom = 500 * 1024 * 1024  # 500 MB safety margin
+    budget = total - allocated - headroom
+
+    if budget <= 0:
+        return 256
+
+    # ~1500 bytes per pixel for model forward pass + SDE diffusion state
+    pixels = budget / 1500
+    side = int(math.sqrt(pixels))
+    side = (side // 64) * 64  # round down to nearest 64
+    return max(256, min(2048, side))
 
 
 def load_model(weights_path: str, device: torch.device) -> ConditionalNAFNet:

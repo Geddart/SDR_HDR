@@ -14,16 +14,43 @@ Usage:
     python convert.py input.png --mode model --exposure -4
 """
 import argparse
+import os
 import sys
 from pathlib import Path
 
 import torch
 
-from pipeline.inference import load_model, convert_file
+from pipeline.inference import load_model, convert_file, estimate_tile_size
 
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
-DEFAULT_WEIGHTS = Path(__file__).parent / "weights" / "lastest_EMA.pth"
+WEIGHTS_FILENAME = "lastest_EMA.pth"
+
+
+def _resolve_weights_path() -> Path:
+    """Find weights: project-relative first, then user cache dir."""
+    # 1. Project-relative (git clone + python convert.py)
+    project_weights = Path(__file__).parent / "weights" / WEIGHTS_FILENAME
+    if project_weights.exists():
+        return project_weights
+
+    # 2. User cache dir (pip install)
+    if sys.platform == "win32":
+        cache_dir = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "sdr-hdr"
+    else:
+        cache_dir = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "sdr-hdr"
+
+    cache_weights = cache_dir / WEIGHTS_FILENAME
+    if cache_weights.exists():
+        return cache_weights
+
+    # Neither exists — return project-relative if weights/ dir exists, else cache
+    if (Path(__file__).parent / "weights").is_dir():
+        return project_weights
+    return cache_weights
+
+
+DEFAULT_WEIGHTS = _resolve_weights_path()
 
 
 def main():
@@ -43,8 +70,8 @@ def main():
     parser.add_argument("--normalize", type=str, default="diffuse",
                         choices=["diffuse", "pq-peak", "middle-gray"],
                         help="Luminance normalization (model mode only, default: diffuse)")
-    parser.add_argument("--tile-size", type=int, default=1024,
-                        help="Max tile dimension in pixels (model mode only, default: 1024)")
+    parser.add_argument("--tile-size", type=int, default=None,
+                        help="Max tile dimension in pixels (model mode only, default: auto based on VRAM)")
     parser.add_argument("--overlap", type=int, default=64,
                         help="Tile overlap in pixels (model mode only, default: 64)")
     parser.add_argument("--peak", type=float, default=150.0,
@@ -89,16 +116,25 @@ def main():
 
     # Load model (only if needed)
     model = None
+    tile_size = args.tile_size
     if args.mode == "model":
         weights = Path(args.weights)
         if not weights.exists():
-            print(f"Error: Weights not found at {weights}")
-            print(f"Download from: https://www.dropbox.com/scl/fi/yg44t2i9tgrlsn3c1punc/lastest_EMA.pth")
-            print(f"Place in: {DEFAULT_WEIGHTS}")
-            sys.exit(1)
+            # Auto-download only for default path; custom --weights is a user error
+            if args.weights != str(DEFAULT_WEIGHTS):
+                print(f"Error: Weights not found at {weights}")
+                sys.exit(1)
+            from pipeline.download import download_weights
+            weights.parent.mkdir(parents=True, exist_ok=True)
+            download_weights(str(weights))
         print(f"Loading model from {weights}...")
         model = load_model(str(weights), device)
         print(f"Model loaded. Normalization: {args.normalize}")
+
+        # Auto tile-size based on available VRAM
+        if tile_size is None:
+            tile_size = estimate_tile_size(device)
+        print(f"Tile size: {tile_size}px")
 
     # Process
     for i, file in enumerate(files):
@@ -117,7 +153,7 @@ def main():
             device=device,
             mode=args.mode,
             model=model,
-            tile_size=args.tile_size,
+            tile_size=tile_size or 1024,
             overlap=args.overlap,
             normalize_mode=args.normalize,
             exposure=args.exposure,

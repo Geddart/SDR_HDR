@@ -79,3 +79,37 @@ def test_normalize_middle_gray():
     result = normalize_luminance(img, mode="middle-gray")
     expected = torch.full((2, 2, 3), 0.18)
     torch.testing.assert_close(result, expected, rtol=1e-4, atol=1e-4)
+
+
+def test_inverse_tonemap_zero():
+    """Black input should produce zero output."""
+    from pipeline.colorspace import inverse_tonemap
+    result = inverse_tonemap(torch.tensor([0.0]))
+    assert result.item() == pytest.approx(0.0, abs=1e-8)
+
+
+def test_inverse_tonemap_one_equals_peak():
+    """Input 1.0 should map to exactly peak."""
+    from pipeline.colorspace import inverse_tonemap
+    for peak in [100.0, 150.0, 200.0]:
+        result = inverse_tonemap(torch.tensor([1.0]), peak=peak, gain=3.0)
+        assert result.item() == pytest.approx(peak, abs=0.01), f"peak={peak}"
+
+
+def test_inverse_tonemap_midtone_gain():
+    """Small values should behave approximately as linear * gain."""
+    from pipeline.colorspace import inverse_tonemap
+    x = torch.tensor([0.01])
+    result = inverse_tonemap(x, peak=150.0, gain=3.0)
+    # At x=0.01: gain + (peak-gain)*x^2 ≈ gain (since x^2 is tiny)
+    expected = 0.01 * 3.0
+    assert result.item() == pytest.approx(expected, rel=0.05)
+
+
+def test_inverse_tonemap_monotonic():
+    """Output should be monotonically increasing."""
+    from pipeline.colorspace import inverse_tonemap
+    x = torch.linspace(0, 1, 100)
+    y = inverse_tonemap(x, peak=150.0, gain=3.0)
+    diffs = y[1:] - y[:-1]
+    assert (diffs >= 0).all()
