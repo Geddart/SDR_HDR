@@ -15,9 +15,11 @@ CLI tool converting sRGB images to ACEScg half-float EXR with AI-based highlight
 
 - Model code extracted from Refusion-HDR and modernized for PyTorch 2.x (removed deprecated ByteStorage, ByteTensor APIs)
 - Pretrained weights loaded via standard state_dict (architecture must match exactly)
-- Color conversion (BT.2020 → ACEScg) done as GPU 3x3 matrix multiply, not OCIO
+- Color conversion (Rec.709 → ACEScg) done as GPU 3x3 matrix multiply with Bradford D65→D60, not OCIO
 - PU21 decode runs on GPU tensors, not numpy
 - Tiling with cosine-blend overlap for images > 2048px
+- Both linear and model modes share the same inverse tonemap curve: `L * (gain + (peak-gain) * L^power)`
+- Scene presets (night, day, interior, overcast, hdri, roundtrip) set peak/gain/power/dither defaults
 
 ## File Conventions
 
@@ -29,13 +31,16 @@ CLI tool converting sRGB images to ACEScg half-float EXR with AI-based highlight
 ## Color Science Reference
 
 - Input: sRGB (Rec.709 primaries, sRGB transfer function)
-- Model output: PU21-encoded, decoded to linear BT.2020 luminance in nits
+- Model output: PU21-encoded, decoded to Rec.709 luminance in nits (NOT BT.2020)
 - Final output: ACEScg (AP1 primaries, D60 white point, scene-linear)
-- BT.2020→ACEScg matrix includes D65→D60 chromatic adaptation
-- Default normalization: 100 nits = 1.0 (diffuse white)
+- Rec.709→ACEScg matrix includes Bradford D65→D60 chromatic adaptation
+- Inverse tonemap: `L * (gain + (peak-gain) * L^power)` — applied to luminance only, RGB scaled proportionally
+- TPDF dithering at ±1 LSB before nonlinear expansion (disable with `--no-dither` for round-trips)
+- The REC709_TO_ACESCG matrix is verified correct — never blend or scale it
 
 ## Testing
 
-- Validate against stock Refusion-HDR output on reference images
+- 53 tests covering colorspace, inference, presets, power, dithering, and round-trip
+- Synthetic round-trip test: ACEScg → sRGB 8-bit → ACEScg with <1% per-channel error
 - Check EXR readability in Nuke/3ds Max
 - Verify ACEScg values with colour-science library spot checks

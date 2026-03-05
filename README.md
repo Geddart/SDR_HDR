@@ -34,36 +34,40 @@ sdr-hdr ./textures/ -o ./textures_hdr/
 
 ## Scene Presets
 
-Linear mode ships with presets tuned for common scene types. Pick the one that matches your source and go.
+Presets are tuned for common scene types. Pick the one that matches your source and go.
 
 ```bash
 sdr-hdr photo.png --preset day -o photo_acescg.exr
 sdr-hdr photo.png --preset night -o photo_acescg.exr
 sdr-hdr photo.png --preset hdri -o photo_acescg.exr
+
+# Round-trip: restore ACEScg data that was saved as sRGB PNG
+sdr-hdr texture.png --preset roundtrip -o texture_acescg.exr
 ```
 
-| Preset | Peak | Gain | What it's for |
-|--------|------|------|---------------|
-| `night` | 150 | 3.0 | Night exteriors — point lights very hot, deep shadows |
-| `day` | 30 | 4.0 | Daylight — lower contrast, ambient-filled shadows |
-| `interior` | 60 | 3.5 | Indoor scenes — windows and practicals moderately hot |
-| `overcast` | 15 | 5.0 | Flat lighting — gentle expansion, lifted shadows |
-| `hdri` | 250 | 3.0 | Environment maps for CG lighting — very hot light sources |
+| Preset | Peak | Gain | Power | What it's for |
+|--------|------|------|-------|---------------|
+| `night` | 150 | 3.0 | 2 | Night exteriors — point lights very hot, deep shadows |
+| `day` | 30 | 4.0 | 2 | Daylight — lower contrast, ambient-filled shadows |
+| `interior` | 60 | 3.5 | 2 | Indoor scenes — windows and practicals moderately hot |
+| `overcast` | 15 | 5.0 | 2 | Flat lighting — gentle expansion, lifted shadows |
+| `hdri` | 250 | 3.0 | 2 | Environment maps for CG lighting — very hot light sources |
+| `roundtrip` | 1 | 1.0 | 50 | Restore ACEScg data saved as sRGB PNG — no expansion, no dither |
 
-`--peak` and `--gain` override preset values if you need to fine-tune:
+`--peak`, `--gain`, and `--power` override preset values if you need to fine-tune:
 
 ```bash
 # Start with night preset but cap highlights lower
 sdr-hdr photo.png --preset night --peak 100
 ```
 
-Without a preset, defaults are peak=150 and gain=3.0.
+Without a preset, defaults are peak=150, gain=3.0, power=2.
 
 ## Two Modes
 
 ### Model Mode (`--mode model`)
 
-A [Refusion-HDR](https://github.com/LiamLian0727/Refusion-HDR) diffusion model (ConditionalNAFNet + IRSDE) runs 100 reverse diffusion steps to reconstruct what was behind clipped highlights. PU21 decodes to absolute luminance, then converts to ACEScg.
+A [Refusion-HDR](https://github.com/LiamLian0727/Refusion-HDR) diffusion model (ConditionalNAFNet + IRSDE) runs 100 reverse diffusion steps to reconstruct what was behind clipped highlights. PU21 decodes to absolute luminance, then the same luminance-preserving inverse tonemap as linear mode expands the dynamic range using `--peak` and `--gain`. Both modes produce matching output ranges — the model contributes smarter highlight reconstruction.
 
 Weights (~292 MB) auto-download on first run. Tile size auto-adapts to your VRAM.
 
@@ -75,7 +79,7 @@ Pure math, no AI. Fast, runs on CPU.
 sRGB → EOTF decode → TPDF dither → luminance-based inverse tonemap → Rec.709 → ACEScg
 ```
 
-Applies `hdr = Y * (gain + (peak - gain) * Y²)` to luminance only, scales RGB proportionally. Preserves chromaticity, prevents solarization. TPDF dithering kills 8-bit banding before the nonlinear expansion.
+Applies `hdr = Y * (gain + (peak - gain) * Y^power)` to luminance only, scales RGB proportionally. Preserves chromaticity, prevents solarization. `--power` controls how steeply highlights ramp up: low power (2) spreads expansion across the range, high power (50) concentrates it near white. TPDF dithering kills 8-bit banding before the nonlinear expansion; disable with `--no-dither` for clean round-trips.
 
 ## Parameters
 
@@ -88,11 +92,10 @@ sdr-hdr input -o output [options]
 | `--mode` | `linear` | `linear` or `model` |
 | `--preset` | — | Scene preset: `night`, `day`, `interior`, `overcast`, `hdri` |
 | `--exposure` | `0.0` | Exposure adjustment in stops |
-| `--peak` | `150` | Max HDR value — or set by preset (linear mode) |
-| `--gain` | `3.0` | Mid-tone multiplier — or set by preset (linear mode) |
+| `--peak` | `150` | Max HDR value — or set by preset |
+| `--gain` | `3.0` | Mid-tone multiplier — or set by preset |
 | `--tile-size` | auto | Tile dimension, auto from VRAM (model mode) |
 | `--overlap` | `64` | Tile overlap for blending (model mode) |
-| `--normalize` | `diffuse` | `diffuse`, `pq-peak`, or `middle-gray` (model mode) |
 | `--weights` | auto | Path to model checkpoint (model mode) |
 
 ## How It Works

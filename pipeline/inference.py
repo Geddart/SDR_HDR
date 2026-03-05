@@ -13,7 +13,7 @@ from models.nafnet import ConditionalNAFNet
 from models.sde import IRSDE
 from models.pu21 import PU21Encoder
 from pipeline.colorspace import (
-    srgb_to_linear, rec709_to_acescg, inverse_tonemap, normalize_luminance,
+    srgb_to_linear, rec709_to_acescg, inverse_tonemap,
 )
 from pipeline.exr_writer import write_exr
 
@@ -98,11 +98,13 @@ def convert_linear(
     exposure: float = 0.0,
     peak: float = 150.0,
     gain: float = 3.0,
+    power: float = 2.0,
+    dither: bool = True,
 ) -> torch.Tensor:
     """
     Convert sRGB image to ACEScg scene-linear with HDR highlight expansion.
 
-    Pipeline: sRGB EOTF -> dither -> luminance-based inverse tone map -> Rec.709 -> ACEScg.
+    Pipeline: sRGB EOTF -> [dither] -> luminance-based inverse tone map -> Rec.709 -> ACEScg.
 
     The HDR curve is applied to luminance only, then RGB is scaled
     proportionally. This preserves chromaticity and avoids per-channel
@@ -113,16 +115,20 @@ def convert_linear(
         exposure: Exposure adjustment in stops (EV). 0 = no change.
         peak: Peak HDR value. sRGB white (1.0) maps to this in scene-linear.
         gain: Mid-tone multiplier for non-highlight brightness.
+        power: Exponent controlling highlight rolloff steepness.
+        dither: Apply TPDF dithering to mask 8-bit banding. Disable for
+                clean round-trip conversions where no expansion is applied.
 
     Returns:
         ACEScg scene-linear (H, W, 3) float32.
     """
     linear = srgb_to_linear(image)
 
-    # Triangular dither to break up 8-bit banding before nonlinear expansion.
-    # TPDF noise at +/- 1 LSB of 8-bit source (1/255).
-    noise = (torch.rand_like(linear) + torch.rand_like(linear) - 1.0) / 255.0
-    linear = (linear + noise).clamp(0.0)
+    if dither:
+        # Triangular dither to break up 8-bit banding before nonlinear expansion.
+        # TPDF noise at +/- 1 LSB of 8-bit source (1/255).
+        noise = (torch.rand_like(linear) + torch.rand_like(linear) - 1.0) / 255.0
+        linear = (linear + noise).clamp(0.0)
 
     # Rec.709 luminance
     Y = (0.2126 * linear[..., 0:1]
@@ -131,7 +137,7 @@ def convert_linear(
 
     # Apply HDR curve to luminance only, then scale RGB proportionally.
     # This preserves the original chromaticity and avoids solarization.
-    Y_hdr = inverse_tonemap(Y, peak=peak, gain=gain)
+    Y_hdr = inverse_tonemap(Y, peak=peak, gain=gain, power=power)
     hdr = linear * (Y_hdr / Y)
 
     acescg = rec709_to_acescg(hdr)
@@ -186,8 +192,10 @@ def run_inference(
     device: torch.device,
     tile_size: int = 1024,
     overlap: int = 64,
-    normalize_mode: str = "diffuse",
     exposure: float = 0.0,
+    peak: float = 150.0,
+    gain: float = 3.0,
+    power: float = 2.0,
 ) -> torch.Tensor:
     """
     Full AI pipeline: sRGB image (H, W, 3) -> ACEScg HDR (H, W, 3).
@@ -231,16 +239,23 @@ def run_inference(
     pu21_scale = pu21.encode(torch.tensor(1000.0))
     output_nits = pu21.decode(output * pu21_scale)
 
-    # Normalize luminance
-    output_normalized = normalize_luminance(output_nits, mode=normalize_mode)
+    # Normalize to [0,1] where 1.0 = 1000 nits (model's training max)
+    output_norm = (output_nits / 1000.0).clamp(0.0, 1.0)
+
+    # Luminance-preserving inverse tonemap (same curve as linear mode)
+    Y = (0.2126 * output_norm[..., 0:1]
+         + 0.7152 * output_norm[..., 1:2]
+         + 0.0722 * output_norm[..., 2:3]).clamp(min=1e-10)
+    Y_hdr = inverse_tonemap(Y, peak=peak, gain=gain, power=power)
+    output_hdr = output_norm * (Y_hdr / Y)
 
     # Rec.709 -> ACEScg (model outputs in Rec.709/sRGB primaries)
-    output_acescg = rec709_to_acescg(output_normalized)
+    output_acescg = rec709_to_acescg(output_hdr)
 
     # Apply exposure
     if exposure != 0.0:
-        gain = 2.0 ** exposure
-        output_acescg = output_acescg * gain
+        ev_gain = 2.0 ** exposure
+        output_acescg = output_acescg * ev_gain
 
     return output_acescg
 
@@ -266,10 +281,11 @@ def convert_file(
     model: ConditionalNAFNet = None,
     tile_size: int = 1024,
     overlap: int = 64,
-    normalize_mode: str = "diffuse",
     exposure: float = 0.0,
     peak: float = 150.0,
     gain: float = 3.0,
+    power: float = 2.0,
+    dither: bool = True,
 ):
     """Convert a single image file to ACEScg EXR. Preserves alpha if present."""
     image, alpha = load_image(input_path)
@@ -277,12 +293,13 @@ def convert_file(
           f", alpha={'yes' if alpha is not None else 'no'})")
 
     if mode == "linear":
-        result = convert_linear(image, exposure=exposure, peak=peak, gain=gain)
+        result = convert_linear(image, exposure=exposure, peak=peak, gain=gain, power=power, dither=dither)
     elif mode == "model":
         if model is None:
             raise ValueError("Model mode requires a loaded model")
         result = run_inference(
-            model, image, device, tile_size, overlap, normalize_mode, exposure,
+            model, image, device, tile_size, overlap,
+            exposure=exposure, peak=peak, gain=gain, power=power,
         )
     else:
         raise ValueError(f"Unknown mode: {mode}")
