@@ -90,12 +90,14 @@ sdr-hdr input -o output [options]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--mode` | `linear` | `linear` or `model` |
-| `--preset` | — | Scene preset: `night`, `day`, `interior`, `overcast`, `hdri` |
+| `--preset` | — | Scene preset: `night`, `day`, `interior`, `overcast`, `hdri`, `roundtrip` |
 | `--exposure` | `0.0` | Exposure adjustment in stops |
 | `--peak` | `150` | Max HDR value — or set by preset |
 | `--gain` | `3.0` | Mid-tone multiplier — or set by preset |
 | `--tile-size` | auto | Tile dimension, auto from VRAM (model mode) |
 | `--overlap` | `64` | Tile overlap for blending (model mode) |
+| `--power` | `2` | Highlight rolloff steepness — or set by preset |
+| `--no-dither` | off | Disable TPDF dithering (cleaner for round-trips) |
 | `--weights` | auto | Path to model checkpoint (model mode) |
 
 ## How It Works
@@ -123,7 +125,7 @@ SDR_HDR/
 │   ├── nafnet.py           # ConditionalNAFNet (Refusion-HDR)
 │   ├── sde.py              # IRSDE diffusion engine
 │   └── pu21.py             # PU21 perceptual encoder/decoder
-├── tests/                  # 45 tests
+├── tests/                  # 53 tests
 └── weights/                # Auto-downloaded, gitignored
 ```
 
