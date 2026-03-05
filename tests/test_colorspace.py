@@ -113,3 +113,21 @@ def test_inverse_tonemap_monotonic():
     y = inverse_tonemap(x, peak=150.0, gain=3.0)
     diffs = y[1:] - y[:-1]
     assert (diffs >= 0).all()
+
+
+def test_inverse_tonemap_power_peak():
+    """Input 1.0 should map to peak regardless of power."""
+    from pipeline.colorspace import inverse_tonemap
+    for power in [2.0, 4.0, 10.0, 50.0]:
+        result = inverse_tonemap(torch.tensor([1.0]), peak=150.0, gain=3.0, power=power)
+        assert result.item() == pytest.approx(150.0, abs=0.01), f"power={power}"
+
+
+def test_inverse_tonemap_power_monotonic():
+    """Higher power should be monotonic for any power value."""
+    from pipeline.colorspace import inverse_tonemap
+    x = torch.linspace(0, 1, 100)
+    for power in [2.0, 4.0, 10.0, 50.0]:
+        y = inverse_tonemap(x, peak=150.0, gain=3.0, power=power)
+        diffs = y[1:] - y[:-1]
+        assert (diffs >= 0).all(), f"power={power}: not monotonic"

@@ -19,7 +19,8 @@ class TestConvertLinear:
     def test_black_stays_near_zero(self):
         img = torch.zeros(10, 10, 3)
         result = convert_linear(img)
-        assert result.max().item() < 0.01
+        # TPDF dithering adds ±1/255 noise, so values up to ~0.012 are normal
+        assert result.max().item() < 0.02
 
     def test_white_maps_to_peak(self):
         img = torch.ones(10, 10, 3)
@@ -155,6 +156,103 @@ class TestPresets:
         from convert import PRESETS
         img = torch.rand(20, 20, 3)
         for name, vals in PRESETS.items():
-            result = convert_linear(img, peak=vals["peak"], gain=vals["gain"])
+            result = convert_linear(
+                img, peak=vals["peak"], gain=vals["gain"],
+                power=vals.get("power", 2.0),
+                dither=vals.get("dither", True),
+            )
             assert result.min().item() >= 0.0, f"{name}: negative values"
             assert torch.isfinite(result).all(), f"{name}: non-finite values"
+
+
+class TestPower:
+    """Tests for the power parameter in inverse tonemap."""
+
+    def test_higher_power_keeps_midtones_darker(self):
+        """Higher power should keep midtones closer to gain*L."""
+        img = torch.full((10, 10, 3), 0.5)
+        low_power = convert_linear(img, peak=150.0, gain=1.0, power=2.0, dither=False)
+        high_power = convert_linear(img, peak=150.0, gain=1.0, power=50.0, dither=False)
+        # High power concentrates expansion near white, so midtones stay lower
+        assert high_power.mean().item() < low_power.mean().item()
+
+    def test_power_does_not_affect_peak(self):
+        """White input should map to peak regardless of power."""
+        img = torch.ones(10, 10, 3)
+        for power in [2.0, 4.0, 10.0, 50.0]:
+            result = convert_linear(img, peak=150.0, gain=3.0, power=power, dither=False)
+            max_val = result.max().item()
+            assert max_val > 140, f"power={power}: max={max_val}, expected ~150"
+            assert max_val < 160, f"power={power}: max={max_val}, expected ~150"
+
+    def test_roundtrip_preset_near_identity(self):
+        """Roundtrip preset (gain=1, power=50) should be near-identity for mid values."""
+        img = torch.full((10, 10, 3), 0.3)
+        result = convert_linear(img, peak=1.0, gain=1.0, power=50.0, dither=False)
+        # sRGB 0.3 -> linear ~0.073. With gain=1, peak=1, power=50: output ≈ 0.073
+        # After Rec.709->ACEScg (preserves gray), should stay near 0.073
+        mean = result.mean().item()
+        expected = 0.073
+        assert abs(mean - expected) / expected < 0.05, f"Expected ~{expected}, got {mean}"
+
+
+class TestDither:
+    """Tests for TPDF dithering control."""
+
+    def test_no_dither_is_deterministic(self):
+        """Without dithering, identical inputs give identical outputs."""
+        img = torch.full((10, 10, 3), 0.5)
+        r1 = convert_linear(img, dither=False)
+        r2 = convert_linear(img, dither=False)
+        torch.testing.assert_close(r1, r2)
+
+    def test_dither_adds_variation(self):
+        """With dithering, identical inputs give slightly different outputs."""
+        img = torch.full((10, 10, 3), 0.5)
+        r1 = convert_linear(img, dither=True)
+        r2 = convert_linear(img, dither=True)
+        # Should differ due to random dither noise
+        assert not torch.equal(r1, r2)
+
+
+class TestRoundTrip:
+    """Synthetic round-trip: ACEScg -> sRGB 8-bit -> ACEScg."""
+
+    def test_roundtrip_per_channel_error(self):
+        """Full forward+reverse cycle should have <1% per-channel error."""
+        from pipeline.colorspace import rec709_to_acescg, srgb_to_linear, REC709_TO_ACESCG
+
+        # Start with known ACEScg values in the mid-to-bright range where
+        # 8-bit sRGB has enough precision for <1% round-trip error.
+        acescg_orig = torch.tensor([
+            [[0.10, 0.08, 0.06], [0.15, 0.12, 0.08]],
+            [[0.30, 0.25, 0.10], [0.50, 0.40, 0.20]],
+        ])
+
+        # Forward: ACEScg -> Rec.709 linear
+        M_inv = torch.linalg.inv(REC709_TO_ACESCG).to(dtype=acescg_orig.dtype)
+        rec709_linear = torch.einsum("...c,dc->...d", acescg_orig, M_inv)
+
+        # Rec.709 linear -> sRGB gamma
+        def linear_to_srgb(x):
+            x = x.clamp(0.0, 1.0)
+            low = x * 12.92
+            high = 1.055 * x.pow(1.0 / 2.4) - 0.055
+            return torch.where(x <= 0.0031308, low, high)
+
+        srgb = linear_to_srgb(rec709_linear)
+
+        # Quantize to 8-bit
+        srgb_8bit = (srgb * 255.0).round().clamp(0, 255) / 255.0
+
+        # Reverse: sRGB -> linear -> ACEScg
+        linear_back = srgb_to_linear(srgb_8bit)
+        acescg_back = rec709_to_acescg(linear_back)
+
+        # Per-channel relative error should be <1% for values above 8-bit noise floor.
+        # Very small values (< 0.02) have only a few 8-bit levels, so quantization
+        # error is proportionally larger.
+        mask = acescg_orig > 0.02
+        rel_err = ((acescg_back[mask] - acescg_orig[mask]) / acescg_orig[mask]).abs()
+        max_err = rel_err.max().item()
+        assert max_err < 0.01, f"Round-trip error {max_err:.4f} exceeds 1%"

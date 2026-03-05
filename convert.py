@@ -27,11 +27,12 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 WEIGHTS_FILENAME = "lastest_EMA.pth"
 
 PRESETS = {
-    "night":    {"peak": 150.0, "gain": 3.0},
-    "day":      {"peak": 30.0,  "gain": 4.0},
-    "interior": {"peak": 60.0,  "gain": 3.5},
-    "overcast": {"peak": 15.0,  "gain": 5.0},
-    "hdri":     {"peak": 250.0, "gain": 3.0},
+    "night":     {"peak": 150.0, "gain": 3.0, "power": 2.0},
+    "day":       {"peak": 30.0,  "gain": 4.0, "power": 2.0},
+    "interior":  {"peak": 60.0,  "gain": 3.5, "power": 2.0},
+    "overcast":  {"peak": 15.0,  "gain": 5.0, "power": 2.0},
+    "hdri":      {"peak": 250.0, "gain": 3.0, "power": 2.0},
+    "roundtrip": {"peak": 1.0,   "gain": 1.0, "power": 50.0, "dither": False},
 }
 
 
@@ -75,9 +76,6 @@ def main():
                         help="Exposure adjustment in stops (default: 0.0)")
     parser.add_argument("--weights", type=str, default=str(DEFAULT_WEIGHTS),
                         help="Path to lastest_EMA.pth checkpoint (model mode only)")
-    parser.add_argument("--normalize", type=str, default="diffuse",
-                        choices=["diffuse", "pq-peak", "middle-gray"],
-                        help="Luminance normalization (model mode only, default: diffuse)")
     parser.add_argument("--tile-size", type=int, default=None,
                         help="Max tile dimension in pixels (model mode only, default: auto based on VRAM)")
     parser.add_argument("--overlap", type=int, default=64,
@@ -86,24 +84,36 @@ def main():
                         choices=list(PRESETS.keys()),
                         help="Scene preset: night, day, interior, overcast, hdri (sets peak and gain)")
     parser.add_argument("--peak", type=float, default=None,
-                        help="Peak HDR value for sRGB white (linear mode, default: 150 or from preset)")
+                        help="Peak HDR value for white (default: 150 or from preset)")
     parser.add_argument("--gain", type=float, default=None,
-                        help="Mid-tone brightness multiplier (linear mode, default: 3.0 or from preset)")
+                        help="Mid-tone brightness multiplier (default: 3.0 or from preset)")
+    parser.add_argument("--power", type=float, default=None,
+                        help="Highlight rolloff steepness (default: 2.0 or from preset)")
+    parser.add_argument("--no-dither", action="store_true",
+                        help="Disable TPDF dithering (cleaner for round-trip conversions)")
     args = parser.parse_args()
 
-    # Resolve peak/gain: preset -> explicit override -> fallback defaults
+    # Resolve peak/gain/power/dither: preset -> explicit override -> fallback defaults
     peak = args.peak
     gain = args.gain
+    power = args.power
+    dither = not args.no_dither
     if args.preset:
         preset_vals = PRESETS[args.preset]
         if peak is None:
             peak = preset_vals["peak"]
         if gain is None:
             gain = preset_vals["gain"]
+        if power is None:
+            power = preset_vals.get("power", 2.0)
+        if not args.no_dither:
+            dither = preset_vals.get("dither", True)
     if peak is None:
         peak = 150.0
     if gain is None:
         gain = 3.0
+    if power is None:
+        power = 2.0
 
     # Resolve input
     input_path = Path(args.input)
@@ -136,13 +146,12 @@ def main():
     print(f"Device: {device}")
     print(f"Mode: {args.mode}")
     print(f"Exposure: {args.exposure:+.1f} EV")
-    if args.mode == "linear":
-        if args.preset:
-            print(f"Preset: {args.preset} (peak={peak:.0f}, gain={gain:.1f})")
-        else:
-            print(f"Peak: {peak:.0f}, Gain: {gain:.1f}")
-    elif args.preset:
-        print(f"Note: --preset is ignored in model mode")
+    if args.preset:
+        print(f"Preset: {args.preset} (peak={peak:.0f}, gain={gain:.1f}, power={power:.0f})")
+    else:
+        print(f"Peak: {peak:.0f}, Gain: {gain:.1f}, Power: {power:.0f}")
+    if not dither:
+        print("Dithering: off")
 
     # Load model (only if needed)
     model = None
@@ -159,7 +168,7 @@ def main():
             download_weights(str(weights))
         print(f"Loading model from {weights}...")
         model = load_model(str(weights), device)
-        print(f"Model loaded. Normalization: {args.normalize}")
+        print(f"Model loaded.")
 
         # Auto tile-size based on available VRAM
         if tile_size is None:
@@ -185,10 +194,11 @@ def main():
             model=model,
             tile_size=tile_size or 1024,
             overlap=args.overlap,
-            normalize_mode=args.normalize,
             exposure=args.exposure,
             peak=peak,
             gain=gain,
+            power=power,
+            dither=dither,
         )
 
     print(f"\nDone. Processed {len(files)} image(s).")

@@ -62,24 +62,27 @@ def inverse_tonemap(
     linear: torch.Tensor,
     peak: float = 150.0,
     gain: float = 3.0,
+    power: float = 2.0,
 ) -> torch.Tensor:
     """
     SDR-to-HDR expansion with mid-tone lift and highlight rolloff.
 
     Maps linear [0, 1] to HDR [0, peak]:
-        hdr = linear * (gain + (peak - gain) * linear^2)
+        hdr = linear * (gain + (peak - gain) * linear^power)
 
     - Low values behave as linear * gain (lifts mid-tones)
     - At linear=1.0, output equals peak exactly
-    - Smooth polynomial transition between the two regimes
+    - Higher power keeps shadows/midtones closer to linear*gain,
+      concentrating the HDR expansion near white.
 
     Args:
         linear: Scene-linear values in [0, 1]. Any shape.
         peak: Maximum output value. sRGB white (1.0) maps to this.
         gain: Mid-tone multiplier. Controls brightness of non-highlight pixels.
+        power: Exponent controlling highlight rolloff steepness. Default 2.0.
     """
     L = linear.clamp(0.0, 1.0)
-    return L * (gain + (peak - gain) * L * L)
+    return L * (gain + (peak - gain) * L.pow(power))
 
 
 def normalize_luminance(img: torch.Tensor, mode: str = "diffuse") -> torch.Tensor:
