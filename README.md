@@ -1,5 +1,9 @@
 # SDR to HDR — ACEScg Converter
 
+[![CI](https://github.com/Geddart/SDR_HDR/actions/workflows/ci.yml/badge.svg)](https://github.com/Geddart/SDR_HDR/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+
 Turn any 8-bit image into a production-ready ACEScg EXR. AI-reconstructed highlights, physically plausible dynamic range, ready to light a scene.
 
 ```bash
@@ -67,7 +71,7 @@ Without a preset, defaults are peak=150, gain=3.0, power=2.
 
 ### Model Mode (`--mode model`)
 
-A [Refusion-HDR](https://github.com/LiamLian0727/Refusion-HDR) diffusion model (ConditionalNAFNet + IRSDE) runs 100 reverse diffusion steps to reconstruct what was behind clipped highlights. PU21 decodes to absolute luminance, then the same luminance-preserving inverse tonemap as linear mode expands the dynamic range using `--peak` and `--gain`. Both modes produce matching output ranges — the model contributes smarter highlight reconstruction.
+A [Refusion-HDR](https://github.com/limchaos/Refusion-HDR) diffusion model (ConditionalNAFNet + IRSDE) runs 100 reverse diffusion steps to reconstruct what was behind clipped highlights. PU21 decodes to absolute luminance, then the same luminance-preserving inverse tonemap as linear mode expands the dynamic range using `--peak` and `--gain`. Both modes produce matching output ranges — the model contributes smarter highlight reconstruction.
 
 Weights (~292 MB) auto-download on first run. Tile size auto-adapts to your VRAM.
 
@@ -129,11 +133,23 @@ SDR_HDR/
 └── weights/                # Auto-downloaded, gitignored
 ```
 
+## Development
+
+```bash
+pip install -e ".[dev]"
+pytest -m "not network" -q     # the suite CI runs; GPU tests auto-skip on CPU
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and [CHANGELOG.md](CHANGELOG.md) for release history.
+
 ## License
 
-[MIT](LICENSE)
+This project's own code is [MIT](LICENSE) licensed.
+
+It reuses permissively-licensed model code — see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) and [NOTICE](NOTICE). The pretrained **model weights** are third-party and carry no explicit upstream license; verify their terms before commercial use — see [WEIGHTS_LICENSE.md](WEIGHTS_LICENSE.md). Linear mode (the default) uses no third-party weights.
 
 ## Acknowledgments
 
-- [Refusion-HDR](https://github.com/LiamLian0727/Refusion-HDR) — ConditionalNAFNet + IRSDE architecture (AIM 2025 ITM Challenge)
-- [PU21](https://doi.org/10.1109/TIP.2021.3070413) — Perceptually Uniform encoding (Mantiuk & Azimi 2021)
+- [Refusion-HDR](https://github.com/limchaos/Refusion-HDR) — ConditionalNAFNet + IRSDE architecture, MIT (AIM 2025 ITM Challenge)
+- [NAFNet](https://github.com/megvii-research/NAFNet) — NAFBlock backbone, MIT + Apache-2.0
+- [PU21](https://github.com/gfxdisp/pu21) — Perceptually Uniform encoding, BSD-3-Clause (Mantiuk & Azimi, PCS 2021, [DOI](https://doi.org/10.1109/PCS50896.2021.9477471))

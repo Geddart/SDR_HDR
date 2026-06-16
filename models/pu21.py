@@ -6,7 +6,10 @@ class PU21Encoder:
     Perceptually Uniform (PU21) encoder/decoder for HDR luminance.
     Pure PyTorch implementation — works on CPU and CUDA tensors.
 
-    Reference: Mantiuk & Azimi, Picture Coding Symposium 2021.
+    Independent reimplementation of the published PU21 formula
+    (Mantiuk & Azimi, Picture Coding Symposium 2021,
+    DOI 10.1109/PCS50896.2021.9477471). The original reference code
+    (https://github.com/gfxdisp/pu21) is BSD-3-Clause; see THIRD_PARTY_LICENSES.md.
     """
 
     def __init__(self, encoding_type: str = "banding_glare"):

@@ -1,0 +1,26 @@
+SDR_HDR
+Copyright (c) 2026 Sascha Geddert
+
+This product includes software derived from the following projects. Full license
+texts are in THIRD_PARTY_LICENSES.md.
+
+- Refusion-HDR — https://github.com/limchaos/Refusion-HDR
+  MIT License, Copyright (c) 2023 Ziwei Luo.
+  The ConditionalNAFNet (models/nafnet.py) and IRSDE (models/sde.py) components are
+  extracted from this project and modified for PyTorch 2.x (deprecated storage/tensor
+  APIs removed; inference-only paths retained). Model layer names and shapes are
+  unchanged so the pretrained weights load by exact state_dict match.
+
+- NAFNet — https://github.com/megvii-research/NAFNet
+  Dual-licensed: MIT (Copyright (c) 2022 megvii-model) and, for its vendored BasicSR
+  code, Apache License 2.0 (Copyright (c) 2018-2020 BasicSR Authors). The NAFBlock
+  architecture in models/nafnet.py derives from NAFNet.
+
+- PU21 — https://github.com/gfxdisp/pu21
+  BSD 3-Clause License, Copyright (c) 2021 Graphics and Displays group,
+  University of Cambridge. models/pu21.py is an independent PyTorch reimplementation
+  of the published PU21 encoding formula (Mantiuk & Azimi, Picture Coding
+  Symposium 2021, DOI 10.1109/PCS50896.2021.9477471).
+
+Pretrained model weights (lastest_EMA.pth) are third-party and are NOT covered by
+this repository's MIT license. See WEIGHTS_LICENSE.md.

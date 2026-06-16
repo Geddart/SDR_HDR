@@ -1,0 +1,45 @@
+name: Bug report
+description: Report something that does not work as expected
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what did you get instead?
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      description: The exact command you ran.
+      placeholder: sdr-hdr photo.png --mode model -o out.exr
+    validations:
+      required: true
+  - type: textarea
+    id: input-image
+    attributes:
+      label: Input image
+      description: Resolution, bit depth, alpha, and source (e.g. AI-generated PNG, render, photo). For color issues, include sample pixel values if you can.
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options: [linear, model]
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, PyTorch version, GPU (if model mode). Run `python -c "import torch; print(torch.__version__, torch.cuda.is_available())"`.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console output / traceback
+      render: shell

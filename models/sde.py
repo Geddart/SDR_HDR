@@ -1,6 +1,11 @@
 """
 IRSDE (Image Restoration SDE) — extracted from Refusion-HDR.
-Inference-only: forward noise injection + reverse posterior sampling.
+Original: https://github.com/limchaos/Refusion-HDR  (MIT, (c) 2023 Ziwei Luo),
+based on IR-SDE (https://github.com/Algolzw/image-restoration-sde).
+
+Modified from the original: reduced to the inference-only path (forward noise
+injection + reverse posterior sampling), ported to PyTorch 2.x.
+See THIRD_PARTY_LICENSES.md.
 """
 import math
 import torch

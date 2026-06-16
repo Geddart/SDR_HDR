@@ -1,12 +1,19 @@
 """
 ConditionalNAFNet — extracted from Refusion-HDR (AIM 2025 ITM Challenge).
-Original: https://github.com/limchaos/Refusion-HDR
+Original: https://github.com/limchaos/Refusion-HDR  (MIT, (c) 2023 Ziwei Luo)
+
+The NAFBlock architecture derives from NAFNet
+(https://github.com/megvii-research/NAFNet), dual-licensed MIT ((c) 2022
+megvii-model) and Apache-2.0 for its vendored BasicSR code ((c) 2018-2020 BasicSR
+Authors). See THIRD_PARTY_LICENSES.md and NOTICE.
+
+Modified from the originals: ported to PyTorch 2.x (deprecated storage/tensor APIs
+removed), reduced to the inference path. Layer names and tensor shapes are
+unchanged so the pretrained weights load by exact state_dict match.
 
 Architecture: U-Net with NAFBlocks (non-linear activation free), time-conditioned
 via sinusoidal embeddings + FiLM modulation. Used as the denoiser backbone in the
 IRSDE reverse diffusion process.
-
-No modifications to layer names or shapes — pretrained weights load directly.
 """
 import math
 import torch
